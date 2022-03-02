@@ -42,7 +42,8 @@ def trace(cam, SCALE, phi, width, height):
                     break
 
                 # cast ray from intersection to light to see if in shadow
-                shadow_ray = vector.Ray(intersection, vector.normalise(vector.sub(light, intersection)))
+                light_to_point = vector.normalise(vector.sub(objects.light, intersection))
+                shadow_ray = vector.Ray(intersection, light_to_point)
                 t1 = float("inf")
                 for i, obj in enumerate(objects):
                     # avoid self shadowing
@@ -51,21 +52,27 @@ def trace(cam, SCALE, phi, width, height):
                     obj_intersection_shadow, obj_t_shadow = obj.intersect(shadow_ray)
                     if 0 < obj_t_shadow < t:
                         t1 = obj_t_shadow
-                        intersection = obj_intersection_shadow
+                        intersection_shadow = obj_intersection_shadow
                 # in shadow
                 if t1 < float("inf"):
-                    ray_colour = vector.multn(objects[ind].colour(intersection), 0.06)
+                    ray_colour = vector.multn(objects[ind].colour(intersection_shadow), 0.06)
                     pixel_colour = vector.add(pixel_colour, vector.multn(ray_colour, reflectiveness))
                     break
 
                 # diffuse shading (shading based on normal from point to light)
-                light_vector = vector.normalise(vector.sub(light, intersection))
                 normal_vector = objects[ind].normal(intersection)
                 ray_colour = vector.divn(objects[ind].colour(intersection), 255)
-                dotted = max(vector.dot(normal_vector, light_vector), 0)
+                dotted = max(vector.dot(normal_vector, light_to_point), 0)
                 ray_colour = vector.bound(vector.multn(ray_colour, max(dotted + 0.1, 0)/1.1), 0, 1)
                 ray_colour = vector.multn(ray_colour, 255)
 
+                # specular lighting (lighting based on the angle between light reflection and camera)
+                camera_vector = vector.normalise(vector.sub(cam, intersection))
+                light_vector = vector.normalise(vector.sub(intersection, objects.light))
+                light_reflectivity_vector = vector.sub(light_vector, vector.multn(normal_vector, 2 * vector.dot(light_vector, normal_vector)))
+                sf = vector.boundn(vector.dot(light_reflectivity_vector, camera_vector), 0, 1)
+                pixel_colour = vector.add(pixel_colour, vector.multn((255,255,255), pow(sf, 3) * objects[ind].reflectivity * 0.4))
+                
                 # reflection
                 direction = vector.normalise(vector.sub(ray0.dir, vector.multn(normal_vector, 2 * vector.dot(ray0.dir, normal_vector))))
                 ray0 = vector.Ray(vector.add(intersection, vector.multn(normal_vector, 0.0001)), direction)
@@ -78,17 +85,18 @@ def save_image(pixels, file_name: str):
     '''save pixels to image file'''
     img = Image.new("RGB", ((WIDTH), (HEIGHT)))
     new_pixels = img.load()
-    for j, row in enumerate(pixels):
-        for i, c in enumerate(row):
-            new_pixels[i, j] = (int(c[0]), int(c[1]), int(c[2]), 255)
+    for c, x, y in pixels:
+        new_pixels[x, y] = (int(c[0]), int(c[1]), int(c[2]), 255)
     if "." not in file_name:
         file_name += ".png"
     img.save(file_name)
 
-def ssaa(cam, SCALE, phi, width, height):
+@cache
+def ssaa(cam, SCALE, phi, width, height, upscale = 1):
     '''supersampling anti aliasing, boost quality with a linear factor to time'''
-    # WIP only works for a = 3
-    a = 3
+    # a - the length multiplier
+    a = upscale * 2 + 1
+    factor = 1 / (a * a)
     pixels = trace(cam, SCALE, phi, width * a, height * a)
     pixel_lookup = {}
     for c, x, y in pixels:
@@ -96,17 +104,18 @@ def ssaa(cam, SCALE, phi, width, height):
     image = [[(0,0,0) for i in range(width)] for j in range(height)]
     for j in range(1, height):
         for i in range(1, width):
-            for di, dj in [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 0), (0, 1), (1, -1), (1, 0), (1, 1)]:
-                x = i * a + di
-                y = j * a + dj
-                image[j][i] = vector.add(image[j][i], vector.multn(pixel_lookup[(x * SCALE , y * SCALE )], 1/9))
+            for dj in range(-upscale, upscale + 1, 1):
+                for di in range(-upscale, upscale + 1, 1):
+                    x = i * a + di
+                    y = j * a + dj
+                    image[j][i] = vector.add(image[j][i], vector.multn(pixel_lookup[(x * SCALE , y * SCALE )], factor))
     pixels = []
     for j in range(1, height):
         for i in range(1, width):
             pixels.append((image[j][i], i, j))
     return pixels
 
-def render_all():
+def render_all(cam):
     '''Renders all the resolutions for current position and rotation'''
     for sc in range(1, WIDTH // 4):
         trace(cam, sc, phi, WIDTH, HEIGHT)
@@ -145,15 +154,11 @@ if __name__ == "__main__":
     clock = pygame.time.Clock()
     win = pygame.display.set_mode((WIDTH, HEIGHT))
 
-    # need to move to Scene class at some point - and implement different light colours
-    cam = (0, -0.5, -1.5)
-    light = (-3.0, 15.0, 2.5)
-    light_colour = (255, 255, 255)
 
-
-    SCALE = 5
+    SCALE = 1
     # phi: angle on x,z plane
     phi = 0
+    dphi = math.pi / 30
     changed = True
     running = True
     while running:
@@ -162,7 +167,7 @@ if __name__ == "__main__":
             if event.type == pygame.QUIT:
                 running = False
         if changed:
-            pixels = trace(cam, SCALE, phi, WIDTH, HEIGHT)
+            pixels = trace(objects.cam, SCALE, phi, WIDTH, HEIGHT)
             draw(win, pixels)
             pygame.display.flip()
             changed = False
@@ -181,15 +186,23 @@ if __name__ == "__main__":
                 if WIDTH // SCALE < 4:
                     SCALE -= 1
             if keys[pygame.K_w]:
-                cam = cam_movement(cam, phi, "f")
+                SCALE = max(SCALE, 15)
+                objects.cam = cam_movement(objects.cam, phi, "f")
             if keys[pygame.K_s]:
-                cam = cam_movement(cam, phi, "b")
+                SCALE = max(SCALE, 15)
+                objects.cam = cam_movement(objects.cam, phi, "b")
             if keys[pygame.K_a]:
-                cam = cam_movement(cam, phi, "l")
+                SCALE = max(SCALE, 15)
+                objects.cam = cam_movement(objects.cam, phi, "l")
             if keys[pygame.K_d]:
-                cam = cam_movement(cam, phi, "r")
+                SCALE = max(SCALE, 15)
+                objects.cam = cam_movement(objects.cam, phi, "r")
             if keys[pygame.K_LEFT]:
-                phi += 0.1
+                SCALE = max(SCALE, 15)
+                phi += dphi
+                phi %= math.pi * 2
             if keys[pygame.K_RIGHT]:
-                phi -= 0.1
+                SCALE = max(SCALE, 15)
+                phi -= dphi
+                phi %= math.pi * 2
         pygame.event.pump()
