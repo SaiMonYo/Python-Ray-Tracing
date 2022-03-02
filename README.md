@@ -10,13 +10,15 @@ Ray tracing program created in python, no external libraries only pygame to disp
 
 ---
 
-# without SSAA
-![Screenshot](images/noaa.png)
+# without SSAA (with specular highlights)
+![Screenshot](images/nossaa.png)
 
-# with SSAA
-![Screenshot](images/withaa.png)
+# with SSAA x3 (with specular highlights)
+![Screenshot](images/withssaax3.png)
 Most noticeable on the reflections of the floor in the spheres
 
+# with SSAA x3 (with specular highlights)
+![Screenshot](images/withssaax5.png)
 ---
 
 ## Resolutions
